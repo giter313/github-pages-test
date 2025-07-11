@@ -1,37 +1,64 @@
 import express from "express";
-import fetch from "node-fetch";
+import puppeteer from "puppeteer";
+import fs from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 静的ファイル配信 (https://your-app.onrender.com/ で static 内のファイルを配信)
-app.use(express.static(path.join(__dirname, "static")));
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const staticDir = path.join(__dirname, "static");
 
-// Proxy（必要なら）
-app.get("/proxy", async (req, res) => {
-  const target = req.query.url;
-  if (!target) {
-    return res.status(400).send("No URL specified");
-  }
+// static 配信
+app.use(express.static(staticDir));
 
-  try {
-    const response = await fetch(target);
-    const body = await response.text();
-    res.set("Access-Control-Allow-Origin", "*");
-    res.send(body);
-  } catch (error) {
-    res.status(500).send("Error: " + error.toString());
+// デフォルト画面
+app.get("/", (req, res) => {
+  const indexPath = path.join(staticDir, "index.html");
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.send(`
+      <h1>ページがまだ保存されていません</h1>
+      <p>例: <code>/puppet?url=https://example.com</code></p>
+    `);
   }
 });
 
-// デフォルトは static/index.html を返す
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "static", "index.html"));
+// Puppeteer 実行
+app.get("/puppet", async (req, res) => {
+  const targetURL = req.query.url;
+  if (!targetURL) return res.send("エラー: URL を ?url= で指定してください");
+
+  console.log(`取得開始: ${targetURL}`);
+
+  const browser = await puppeteer.launch({
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  const page = await browser.newPage();
+  await page.goto(targetURL, {
+    waitUntil: "networkidle2",
+    timeout: 60000
+  });
+
+  const html = await page.content();
+
+  await fs.ensureDir(staticDir);
+  await fs.writeFile(path.join(staticDir, "index.html"), html);
+
+  await browser.close();
+
+  console.log(`保存完了: static/index.html`);
+
+  res.send(`
+    <h1>保存完了！</h1>
+    <p>取得先: ${targetURL}</p>
+    <p><a href="/">最新ページを見る</a></p>
+  `);
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running at http://localhost:${PORT}`);
 });
